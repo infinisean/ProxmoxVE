@@ -1,0 +1,67 @@
+name: Create new release
+
+on:
+  schedule:
+    # Runs "At 23:59 every night" (UTC)
+    - cron: '59 23 * * *'
+
+jobs:
+  fetch-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Upload CHANGELOG.md
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: CHANGELOG.md
+
+  create-new-release:
+    runs-on: ubuntu-latest
+    needs: fetch-changelog
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download CHANGELOG.md
+        uses: actions/download-artifact@v4
+        with:
+          name: changelog
+      - name: Check if there are any changes in CHANGELOG.md
+        id: verify-diff
+        run: |
+          git diff --quiet . || echo "changed=true" >> $GITHUB_OUTPUT
+      - name: Parse CHANGELOG for today's entries and create a new tag
+        if: steps.verify-diff.outputs.changed == 'true'
+        run: |
+          # Extract the date of today from the CHANGELOG and filter relevant entries
+          TODAY=$(date -u +'%Y-%m-%d')
+          # Find the lines in the CHANGELOG corresponding to today’s date
+          LINES=$(nl -v0 -ba CHANGELOG.md | grep "## $TODAY" - | head -n 2 | awk '{print $1}')
+          DESCRIPTION=$(cat CHANGELOG.md | head -n $(echo $LINES | cut -d' ' -f2) | tac | head -n -$(echo $LINES | cut -d' ' -f1) | head -n -1 | tac)
+
+          # Git commit configuration
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "Changes from $TODAY"
+          git push -u origin main
+          git tag -a "$TODAY" -m "$DESCRIPTION"
+          git push --tags
+
+          echo GITHUB_TAG_RELEASE_VERSION=$TODAY >> $GITHUB_ENV
+          echo "$DESCRIPTION" > RELEASE_CHANGELOG.md
+
+      - name: Create release
+        if: steps.verify-diff.outputs.changed == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          bodyFile: "RELEASE_CHANGELOG.md"
+          tag: ${{ env.GITHUB_TAG_RELEASE_VERSION }}
+          makeLatest: true
